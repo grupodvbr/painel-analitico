@@ -5,141 +5,174 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE
 );
 
-// 🕒 DATA AJUSTADA (Bahia)
+// 🏢 EMPRESAS (IGUAL AO RECEBIMENTOS)
+const EMPRESAS = [
+  "VAREJO_URL_MERCATTO",
+  "VAREJO_URL_VILLA",
+  "VAREJO_URL_PADARIA",
+  "VAREJO_URL_DELICIA"
+];
+
+// 🕒 DATA
 function hoje() {
   return new Date().toISOString().slice(0, 10);
 }
 
 export default async function handler(req, res) {
-  const start = Date.now();
+  const startGlobal = Date.now();
 
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("🚀 SYNC VENDAS INICIADO");
+  console.log("🚀 SYNC GLOBAL VENDAS");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
   try {
 
-    // 🔥 SUPORTE GET + POST
-    const { empresa } = req.body || req.query || {};
+    let totalGlobal = 0;
+    let resultados = [];
 
-    if (!empresa) {
-      console.log("❌ Empresa não informada");
-      return res.status(400).json({
-        ok: false,
-        error: "Empresa é obrigatória"
-      });
+    // 🔁 LOOP EMPRESAS
+    for (const empresa of EMPRESAS) {
+
+      const startEmpresa = Date.now();
+
+      console.log(`\n🏢 PROCESSANDO: ${empresa}`);
+
+      try {
+
+        // 🔎 BUSCAR ÚLTIMA DATA
+        const { data: ultima } = await supabase
+          .from("vendas_realtime")
+          .select("data_fechamento")
+          .eq("empresa", empresa)
+          .order("data_fechamento", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        const ultimaData = ultima?.data_fechamento || hoje();
+
+        console.log("📅 Última data:", ultimaData);
+
+        // 🌐 CHAMAR SUA API (REUTILIZA RECEBIMENTOS)
+        const apiResp = await fetch(process.env.API_URL_RECEBIMENTOS, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            empresa,
+            dataInicio: ultimaData,
+            dataFim: hoje()
+          })
+        });
+
+        if (!apiResp.ok) {
+          const erro = await apiResp.text();
+          console.log(`❌ ERRO API (${empresa}):`, erro);
+
+          resultados.push({
+            empresa,
+            ok: false,
+            erro
+          });
+
+          continue; // 🔥 NÃO PARA O LOOP
+        }
+
+        const raw = await apiResp.json();
+        const vendas = raw.items || [];
+
+        console.log(`📦 ${empresa} → ${vendas.length} vendas`);
+
+        if (!vendas.length) {
+          resultados.push({
+            empresa,
+            ok: true,
+            total: 0
+          });
+          continue;
+        }
+
+        // 🔄 TRANSFORMAR
+        const inserts = vendas.map(v => ({
+          empresa,
+          loja_id: v.lojaId,
+          venda_id: v.id,
+          data: v.dataVenda,
+          data_fechamento: v.dataHoraFechamentoCupom,
+          valor: v.valor,
+          desconto: v.desconto,
+          acrescimo: v.acrescimo,
+          finalizadora_ids: v.finalizacoes?.map(f => f.finalizadoraId) || [],
+          finalizadora_principal: v.finalizacoes?.[0]?.finalizadoraId || null,
+          cancelada: v.cancelada,
+          cliente_id: v.clienteId,
+          funcionario_id: v.funcionarioId,
+          json_completo: v
+        }));
+
+        // 💾 UPSERT
+        const { error } = await supabase
+          .from("vendas_realtime")
+          .upsert(inserts, {
+            onConflict: "venda_id"
+          });
+
+        if (error) {
+          console.log(`❌ ERRO SUPABASE (${empresa}):`, error.message);
+
+          resultados.push({
+            empresa,
+            ok: false,
+            erro: error.message
+          });
+
+          continue;
+        }
+
+        const tempo = ((Date.now() - startEmpresa) / 1000).toFixed(2);
+
+        console.log(`✅ ${empresa} FINALIZADO (${inserts.length}) em ${tempo}s`);
+
+        totalGlobal += inserts.length;
+
+        resultados.push({
+          empresa,
+          ok: true,
+          total: inserts.length,
+          tempo
+        });
+
+      } catch (errEmpresa) {
+
+        console.log(`💥 ERRO GERAL (${empresa}):`, errEmpresa.message);
+
+        resultados.push({
+          empresa,
+          ok: false,
+          erro: errEmpresa.message
+        });
+
+      }
     }
 
-    console.log("🏢 Empresa:", empresa);
+    const tempoTotal = ((Date.now() - startGlobal) / 1000).toFixed(2);
 
-    // 🔎 BUSCAR ÚLTIMA DATA
-    const { data: ultima, error: erroUltima } = await supabase
-      .from("vendas_realtime")
-      .select("data_fechamento")
-      .eq("empresa", empresa)
-      .order("data_fechamento", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (erroUltima) {
-      console.log("⚠️ Erro ao buscar última venda:", erroUltima.message);
-    }
-
-    const ultimaData = ultima?.data_fechamento || hoje();
-
-    console.log("📅 Última data encontrada:", ultimaData);
-
-    // 🌐 CHAMAR API EXTERNA
-    console.log("🌐 Buscando vendas na API...");
-
-    const apiResp = await fetch(process.env.API_URL_RECEBIMENTOS, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        empresa,
-        dataInicio: ultimaData,
-        dataFim: hoje()
-      })
-    });
-
-    if (!apiResp.ok) {
-      const erroTexto = await apiResp.text();
-      console.log("❌ Erro API externa:", erroTexto);
-
-      return res.status(500).json({
-        ok: false,
-        error: "Erro ao consultar API externa",
-        detalhe: erroTexto
-      });
-    }
-
-    const raw = await apiResp.json();
-    const vendas = raw.items || [];
-
-    console.log(`📦 Vendas recebidas: ${vendas.length}`);
-
-    if (!vendas.length) {
-      return res.json({
-        ok: true,
-        total: 0,
-        message: "Nenhuma venda nova"
-      });
-    }
-
-    // 🔄 TRANSFORMAR DADOS
-    const inserts = vendas.map(v => ({
-      empresa,
-      loja_id: v.lojaId,
-      venda_id: v.id,
-      data: v.dataVenda,
-      data_fechamento: v.dataHoraFechamentoCupom,
-      valor: v.valor,
-      desconto: v.desconto,
-      acrescimo: v.acrescimo,
-      finalizadora_ids: v.finalizacoes?.map(f => f.finalizadoraId) || [],
-      finalizadora_principal: v.finalizacoes?.[0]?.finalizadoraId || null,
-      cancelada: v.cancelada,
-      cliente_id: v.clienteId,
-      funcionario_id: v.funcionarioId,
-      json_completo: v
-    }));
-
-    console.log("💾 Salvando no Supabase...");
-
-    const { error: erroInsert } = await supabase
-      .from("vendas_realtime")
-      .upsert(inserts, {
-        onConflict: "venda_id"
-      });
-
-    if (erroInsert) {
-      console.log("❌ Erro ao salvar:", erroInsert.message);
-
-      return res.status(500).json({
-        ok: false,
-        error: erroInsert.message
-      });
-    }
-
-    const tempo = ((Date.now() - start) / 1000).toFixed(2);
-
-    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    console.log("✅ SYNC FINALIZADO");
-    console.log(`📊 Total: ${inserts.length}`);
-    console.log(`⏱ Tempo: ${tempo}s`);
+    console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log("🏁 SYNC GLOBAL FINALIZADO");
+    console.log(`📊 TOTAL: ${totalGlobal}`);
+    console.log(`⏱ TEMPO: ${tempoTotal}s`);
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     return res.json({
       ok: true,
-      empresa,
-      total: inserts.length,
-      tempo
+      totalGlobal,
+      tempoTotal,
+      empresas: resultados
     });
 
   } catch (e) {
-    console.log("💥 ERRO GERAL:", e);
+
+    console.log("💥 ERRO GLOBAL:", e);
 
     return res.status(500).json({
       ok: false,
