@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Painel</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap" rel="stylesheet">
+
+<style>
+:root{
+  --bg:#f8fafc;
+  --card:#ffffff;
+  --line:#e5e7eb;
+
+  --text:#0f172a;
+  --muted:#64748b;
+
+  --primary:#2563eb;
+  --green:#16a34a;
+  --red:#dc2626;
+
+  --shadow:0 6px 20px rgba(0,0,0,0.06);
+}
+
+*{box-sizing:border-box}
+
+body{
+  margin:0;
+  font-family:Inter;
+  background:var(--bg);
+  color:var(--text);
+}
+
+/* HEADER */
+header{
+  background:var(--card);
+  padding:18px 25px;
+  border-bottom:1px solid var(--line);
+  font-weight:800;
+  font-size:20px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+
+.kpi{
+  background:#eff6ff;
+  color:var(--primary);
+  padding:6px 12px;
+  border-radius:10px;
+  font-size:13px;
+  font-weight:600;
+}
+
+/* GRID */
+.container{
+  display:grid;
+  grid-template-columns: 2fr 1fr;
+  gap:18px;
+  padding:18px;
+}
+
+/* CARD */
+.card{
+  background:var(--card);
+  border-radius:14px;
+  padding:16px;
+  box-shadow:var(--shadow);
+  border:1px solid var(--line);
+  display:flex;
+  flex-direction:column;
+  max-height:85vh;
+}
+
+.card-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin-bottom:12px;
+  font-weight:600;
+}
+
+.badge{
+  background:#f1f5f9;
+  padding:5px 10px;
+  border-radius:8px;
+  font-size:12px;
+  color:var(--muted);
+}
+
+/* LISTAS */
+.scroll{
+  overflow:auto;
+}
+
+/* VENDA */
+.venda{
+  padding:12px;
+  border-bottom:1px solid var(--line);
+  transition:.2s;
+}
+
+.venda:hover{
+  background:#f9fafb;
+}
+
+.empresa{
+  font-size:12px;
+  color:var(--muted);
+}
+
+.valor{
+  color:var(--green);
+  font-weight:700;
+  font-size:16px;
+}
+
+/* LOG */
+.log{
+  font-size:12px;
+  padding:8px;
+  border-bottom:1px solid var(--line);
+}
+
+.ok{ color:var(--green) }
+.err{ color:var(--red) }
+
+/* RESPONSIVO */
+@media(max-width:900px){
+  .container{
+    grid-template-columns:1fr;
+  }
+}
+</style>
+</head>
+
+<body>
+
+<header>
+  <div>📊 Painel Realtime Vendas</div>
+
+  <div style="display:flex; gap:10px; align-items:center;">
+    
+    <button onclick="importarCupons()" style="
+      background:#16a34a;
+      color:#fff;
+      border:none;
+      padding:6px 12px;
+      border-radius:8px;
+      font-weight:600;
+      cursor:pointer;
+    ">
+      ⬇️ Importar Cupons
+    </button>
+
+    <div id="total" class="kpi">0 vendas</div>
+
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- VENDAS -->
+  <div class="card">
+    <div class="card-header">
+      <div>🧾 Últimas Vendas</div>
+      <div class="badge">Realtime</div>
+    </div>
+
+    <div id="vendas" class="scroll"></div>
+  </div>
+
+  <!-- LOGS -->
+  <div class="card">
+    <div class="card-header">
+      <div>📡 Logs do Sistema</div>
+    </div>
+
+    <div id="logs" class="scroll"></div>
+  </div>
+
+</div>
+
+<script>
+
+const supabase = window.supabase.createClient(
+  "https://ehxrrpsiksceljmhsfxk.supabase.co",
+  "sb_publishable_Jm2ZQKzPS3gNPCKSjFAmYQ_WNMYwF1j"
+);
+
+const vendasEl = document.getElementById("vendas");
+const logsEl = document.getElementById("logs");
+const totalEl = document.getElementById("total");
+
+let total = 0;
+
+// FORMATA REAL BR
+function formatar(valor){
+  return valor.toLocaleString("pt-BR",{
+    style:"currency",
+    currency:"BRL"
+  });
+}
+
+// LOG
+function log(msg, type="ok"){
+  const el = document.createElement("div");
+  el.className = "log " + (type === "err" ? "err" : "ok");
+  el.innerText = new Date().toLocaleTimeString("pt-BR") + " → " + msg;
+  logsEl.prepend(el);
+}
+
+// RENDER VENDA
+function render(v){
+
+  total++;
+  totalEl.innerText = total + " vendas";
+
+  const el = document.createElement("div");
+  el.className = "venda";
+
+  el.innerHTML = `
+    <div class="empresa">${v.empresa}</div>
+    <strong>🧾 ${v.venda_id}</strong><br>
+    <span class="valor">${formatar(Number(v.valor || 0))}</span><br>
+    💳 ${v.finalizadora_principal || "-"}
+  `;
+
+  vendasEl.prepend(el);
+}
+
+// LOAD INICIAL
+async function load(){
+
+  const { data, error } = await supabase
+    .from("vendas_realtime")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(30);
+
+  if(error){
+    log("Erro load: " + error.message, "err");
+    return;
+  }
+
+  vendasEl.innerHTML = "";
+  total = data.length;
+
+  totalEl.innerText = total + " vendas";
+
+  data.forEach(v => render(v));
+
+  log("Carga inicial realizada");
+}
+
+// REALTIME
+supabase
+  .channel("vendas")
+  .on("postgres_changes", {
+    event: "INSERT",
+    schema: "public",
+    table: "vendas_realtime"
+  }, payload => {
+    render(payload.new);
+    log("Nova venda → " + payload.new.empresa);
+  })
+  .subscribe();
+
+// AUTO SYNC
+const empresas = [
+  "VAREJO_URL_MERCATTO",
+  "VAREJO_URL_VILLA",
+  "VAREJO_URL_PADARIA",
+  "VAREJO_URL_DELICIA"
+];
+
+setInterval(async () => {
+
+  for(const emp of empresas){
+
+    try{
+      log("Sync iniciado: " + emp);
+
+      const resp = await fetch("/api/sync-vendas",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({empresa: emp})
+      });
+
+      const json = await resp.json();
+
+      log("Sync OK: " + emp + " | " + (json.total || 0) + " vendas");
+
+    }catch(e){
+      log("Erro: " + emp + " → " + e.message, "err");
+    }
+
+  }
+
+}, 10000);
+
+// START
+load();
+
+
+async function importarCupons(){
+
+  log("🚀 Importação geral iniciada");
+
+  const empresas = [
+    { id:"VAREJO_URL_MERCATTO", nome:"MERCATTO" },
+    { id:"VAREJO_URL_VILLA", nome:"VILLA" },
+    { id:"VAREJO_URL_PADARIA", nome:"PADARIA" },
+    { id:"VAREJO_URL_DELICIA", nome:"DELICIA" }
+  ];
+
+  for(const emp of empresas){
+
+    try{
+
+      log("🔄 Buscando cupons: " + emp.nome);
+
+      const resp = await fetch("/api/importar-cupons",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          empresa: emp.id,
+          empresa_nome: emp.nome
+        })
+      });
+
+      const json = await resp.json();
+
+      log(`✅ ${emp.nome}: ${json.inseridos || 0} novos`);
+
+    }catch(e){
+
+      log(`❌ ${emp.nome}: ${e.message}`, "err");
+
+    }
+
+  }
+
+  log("🔥 Importação finalizada");
+
+}
+
+
+
+
+  
+</script>
+
+</body>
+</html>
